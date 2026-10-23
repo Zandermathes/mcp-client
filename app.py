@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import gradio as gr
 from dotenv import load_dotenv
-from openai import OpenAI, OpenAIError
+from anthropic import Anthropic, AnthropicError
 
 load_dotenv()
 
@@ -13,7 +13,7 @@ load_dotenv()
 MCP_SERVER_URL = os.getenv(
     'MCP_SERVER_URL', 'https://super-duper-fiesta-r469rjwx477725xgw-8000.app.github.dev/mcp'
 )
-MODEL = os.getenv('OPENAI_MODEL', 'gpt-5.4-mini')
+MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5')
 INSTRUCTIONS = """You are a classroom assistant with access to two MCP servers.
 Choose tools based on the user's request.
 
@@ -63,8 +63,8 @@ def history_text(content):
 
 
 def respond(message, history):
-    if not os.getenv('OPENAI_API_KEY'):
-        return 'Add OPENAI_API_KEY as a GitHub Codespaces secret, then restart the Codespace.', []
+    if not os.getenv('ANTHROPIC_API_KEY'):
+        return 'Add ANTHROPIC_API_KEY as a GitHub Codespaces secret, then restart the Codespace.', []
     parsed = urlparse(MCP_SERVER_URL)
     if parsed.scheme != 'https' or not parsed.hostname or 'YOUR-SERVER' in MCP_SERVER_URL or parsed.path != '/mcp':
         return 'Set MCP_SERVER_URL to your server Codespace public HTTPS URL ending in /mcp, then restart app.py.', []
@@ -75,55 +75,40 @@ def respond(message, history):
             conversation.append({'role': item['role'], 'content': text})
     conversation.append({'role': 'user', 'content': message})
     try:
-        with OpenAI(timeout=120.0, max_retries=1) as client:
-            response = client.responses.create(
+        with Anthropic(timeout=120.0, max_retries=1) as client:
+            response = client.beta.messages.create(
                 model=MODEL,
-                instructions=INSTRUCTIONS + '\nToday in New York: ' + str(datetime.now(ZoneInfo('America/New_York')).date()),
-                input=conversation,
-                tools=[
+                system=INSTRUCTIONS + '\nToday in New York: ' + str(datetime.now(ZoneInfo('America/New_York')).date()),
+                messages=conversation,
+                betas=['mcp-client-2025-04-04'],
+                max_tokens=2500,
+                mcp_servers=[
                     {
-                        "type": "mcp",
-                        "server_label": "classroom_stocks",
-                        "server_description": (
-                            "Calculate historical stock performance and find "
-                            "the stock with the closest monthly return."
-                        ),
-                        "server_url": MCP_SERVER_URL,
-                        "require_approval": "never",
+                        "type": "url",
+                        "name": "classroom_stocks",
+                        "url": MCP_SERVER_URL,
                     },
                     {
-                        "type": "mcp",
-                        "server_label": "microsoft_learn",
-                        "server_description": (
-                            "Search official Microsoft documentation, retrieve "
-                            "articles, and find code samples."
-                        ),
-                        "server_url": "https://learn.microsoft.com/api/mcp",
-                        "require_approval": "never",
+                        "type": "url",
+                        "name": "microsoft_learn",
+                        "url": "https://learn.microsoft.com/api/mcp",
                     },
                     {
-                        "type": "mcp",
-                        "server_label": "coingecko",
-                        "server_description": (
-                            "Retrieve cryptocurrency prices, market capitalization, "
-                            "trading volumes, historical prices, trending coins, "
-                            "and decentralized-exchange pool and liquidity data."
-                        ),
-                        "server_url": "https://mcp.api.coingecko.com/mcp",
-                        "require_approval": "never",
+                        "type": "url",
+                        "name": "coingecko",
+                        "url": "https://mcp.api.coingecko.com/mcp",
                     },
                 ],
-                max_output_tokens=2500,
-                store=False,
             )
-        trace = [item.model_dump(mode='json') for item in response.output
-                 if item.type in ('mcp_list_tools', 'mcp_call', 'mcp_approval_request')]
-        answer = response.output_text or 'No final answer returned. Inspect the MCP trace below and retry.'
-        if response.status != 'completed':
+        trace = [item.model_dump(mode='json') for item in response.content
+                 if item.type in ('mcp_tool_use', 'mcp_tool_result')]
+        answer = ''.join(item.text for item in response.content
+                         if item.type == 'text') or 'No final answer returned. Inspect the MCP trace below and retry.'
+        if response.stop_reason != 'end_turn':
             answer += '\n\nThe API response was incomplete; retry the request.'
         return answer, trace
-    except OpenAIError as exc:
-        return (f'OpenAI/MCP request failed ({type(exc).__name__}). Check the API key/model, '
+    except AnthropicError as exc:
+        return (f'Anthropic/MCP request failed ({type(exc).__name__}). Check the API key/model, '
                 'server URL, public visibility of port 8000, and that both Codespaces are running.', [])
 
 
